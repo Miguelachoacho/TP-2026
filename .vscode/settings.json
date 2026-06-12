@@ -1,0 +1,8 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    "python.defaultInterpreterPath": "${workspaceFolder}\\entornoVirtual\\Scripts\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "terminal.integrated.env.windows": {
+        "PATH": "${workspaceFolder}\\entornoVirtual\\Scripts;${env:PATH}"
+    }
+}
