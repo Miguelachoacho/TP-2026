@@ -1,1 +1,1 @@
-Sorprendentemente el algoritmo creado por la ia pasó todos los test en 2 min y medio. A nivel de código me parece bastante rebuscado en algunos puntos. Pero para mi está correcto. Como pront use la consigna de a activdad.
+Sorprendentemente el algoritmo creado por la ia pasó todos los test en 2 min y medio. A nivel de código me parece bastante rebuscado en algunos puntos. Sorprendentemente la heuristica fue bastante sencilla sumando solo los costos inevitables
