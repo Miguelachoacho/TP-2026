@@ -111,12 +111,12 @@ if __name__ == "__main__":
 
     resultado = build_camp(
         camp_size= (5,6),
-        habs=2,
-        generators=1,
-        labs=1,
-        deposits=1,
-        airlocks=2,
-        craters=[(2, 2), (2, 3)]
+        habs=3,
+        generators=2,
+        labs=2,
+        deposits=2,
+        airlocks=3,
+        craters=[(2, 2), (2, 3),(4,4)]
         )
 
     if resultado is None:

@@ -1,0 +1,1 @@
+En ambas entregas se utilizan las mismas variables la diferencia es que la version hecha por la ia busca excluir valores del dominio antes de resolver el csp. En relacion a las restriciones la versión de la ia utiliza variables auxiliares y restricciones binarias en los casos de la celda de evación. A nivel personal, me resulta más complicada de leer. 
