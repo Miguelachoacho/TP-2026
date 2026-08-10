@@ -1,0 +1,13 @@
+# Entornos virtuales
+EntornoVirtual/
+EntornoVirtualBit/
+
+# Cache Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Modelos entrenados
+*.h5
+*.pkl
+
