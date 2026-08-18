@@ -2,39 +2,32 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
+import joblib
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.multioutput import MultiOutputRegressor
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+import tensorflow as tf
 
 
 DEFAULT_DATA_PATH = Path("Data/full_data.csv")
+MODEL_DIR = Path(__file__).resolve().parent / "Experimentos" / "models_final"
+
+# features usadas para entrenar los MLP guardados en models_final (experimento 3)
 FEATURE_COLUMNS = [
-    "Open",
-    "High",
-    "Low",
     "Volume",
+    "Pct_Change",
+    "Volume_Change_pct",
     "Volatility",
     "SMA_7",
     "SMA_30",
     "fng_value",
     "fng_SMA_7",
     "fng_SMA_30",
+    "BTC_Close_t-1",
+    "BTC_Close_t-2",
+    "BTC_Close_t-3",
+    "BTC_Close_t-7",
+    "Rolling_volatility_30",
+    "Block_reward",
 ]
-
-
-@dataclass
-class ModelScore:
-    name: str
-    mae_mean: float
-    rmse_mean: float
 
 
 @dataclass
@@ -42,15 +35,14 @@ class ForecastResult:
     latest_date: pd.Timestamp
     latest_close: float
     model_name: str
-    scores: list[ModelScore]
     predictions: pd.DataFrame
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Evalua modelos de los experimentos con validacion temporal y "
-            "muestra la prediccion de BTC para t+1 a t+7."
+            "Carga la red neuronal del experimento 3 y realiza la prediccion "
+            "del precio de cierre de BTC para los proximos horizontes."
         )
     )
     parser.add_argument(
@@ -63,13 +55,7 @@ def parse_args() -> argparse.Namespace:
         "--horizon",
         type=int,
         default=7,
-        help="Dias a predecir desde la ultima fecha disponible (default: 7).",
-    )
-    parser.add_argument(
-        "--splits",
-        type=int,
-        default=5,
-        help="Cantidad de folds para validacion temporal (default: 5).",
+        help="Cantidad de dias a pronosticar (default: 7).",
     )
     return parser.parse_args()
 
@@ -79,8 +65,8 @@ def load_dataset(csv_path: Path, horizon: int) -> pd.DataFrame:
         raise FileNotFoundError(f"No existe el archivo: {csv_path}")
 
     df = pd.read_csv(csv_path)
-    if "Date" not in df.columns:
-        raise ValueError("El dataset debe incluir la columna 'Date'.")
+    if "Date" not in df.columns or "Close" not in df.columns:
+        raise ValueError("El dataset debe incluir las columnas 'Date' y 'Close'.")
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df = df.sort_values("Date").reset_index(drop=True)
@@ -88,7 +74,8 @@ def load_dataset(csv_path: Path, horizon: int) -> pd.DataFrame:
     missing_features = [col for col in FEATURE_COLUMNS if col not in df.columns]
     if missing_features:
         raise ValueError(
-            "Faltan columnas requeridas para entrenar: " + ", ".join(missing_features)
+            "Faltan columnas requeridas para la red neuronal: "
+            + ", ".join(missing_features)
         )
 
     for day in range(1, horizon + 1):
@@ -97,133 +84,69 @@ def load_dataset(csv_path: Path, horizon: int) -> pd.DataFrame:
     return df
 
 
-def build_models() -> dict[str, object]:
-    np.random.seed(42)
-    return {
-        "LinearRegression": LinearRegression(),
-        "RandomForest": RandomForestRegressor(
-            n_estimators=200,
-            random_state=42,
-        ),
-        "KNN": KNeighborsRegressor(n_neighbors=21),
-    }
+def load_model_for_horizon(horizon: int):
+    target = f"Close_t+{horizon}"
+    model_path = MODEL_DIR / f"mlp_{target}.keras"
+    scaler_path = MODEL_DIR / f"scaler_{target}.pkl"
+    imputer_path = MODEL_DIR / f"imputer_{target}.pkl"
 
-
-def make_pipeline(model: object) -> Pipeline:
-    estimator = model
-    if not hasattr(model, "predict"):
-        raise ValueError("El modelo no implementa metodo predict().")
-
-    # KNN y RandomForest soportan salida multiple; esta envoltura mantiene robustez.
-    if not hasattr(model, "n_outputs_") and model.__class__.__name__ == "SVR":
-        estimator = MultiOutputRegressor(model)
-
-    mapper = ColumnTransformer(
-        transformers=[("scaler", StandardScaler(), FEATURE_COLUMNS)],
-        remainder="drop",
-    )
-    return Pipeline([
-        ("mapper", mapper),
-        ("model", estimator),
-    ])
-
-
-def evaluate_models(df: pd.DataFrame, horizon: int, splits: int) -> tuple[str, list[ModelScore]]:
-    targets = [f"Close_t+{day}" for day in range(1, horizon + 1)]
-    train_df = df.dropna(subset=FEATURE_COLUMNS + targets).copy()
-
-    X = train_df[FEATURE_COLUMNS]
-    Y = train_df[targets]
-
-    tvt = TimeSeriesSplit(n_splits=splits)
-    models = build_models()
-    scores: list[ModelScore] = []
-
-    for model_name, model in models.items():
-        fold_mae = []
-        fold_rmse = []
-
-        for train_idx, val_idx in tvt.split(X):
-            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            Y_train, Y_val = Y.iloc[train_idx], Y.iloc[val_idx]
-
-            pipeline = make_pipeline(model)
-            pipeline.fit(X_train, Y_train)
-            Y_pred = pipeline.predict(X_val)
-
-            mae = mean_absolute_error(Y_val, Y_pred)
-            rmse = mean_squared_error(Y_val, Y_pred) ** 0.5
-            fold_mae.append(mae)
-            fold_rmse.append(rmse)
-
-        scores.append(
-            ModelScore(
-                name=model_name,
-                mae_mean=float(np.mean(fold_mae)),
-                rmse_mean=float(np.mean(fold_rmse)),
-            )
+    if not model_path.exists() or not scaler_path.exists() or not imputer_path.exists():
+        raise FileNotFoundError(
+            f"No se encontraron artefactos para el horizonte {horizon}. "
+            f"Buscados en: {MODEL_DIR}"
         )
 
-    best_model = min(scores, key=lambda score: score.mae_mean)
-    return best_model.name, sorted(scores, key=lambda score: score.mae_mean)
+    model = tf.keras.models.load_model(model_path)
+    scaler = joblib.load(scaler_path)
+    imputer = joblib.load(imputer_path)
+    return model, scaler, imputer
 
 
-def train_best_and_forecast(
-    df: pd.DataFrame,
-    best_model_name: str,
-    scores: list[ModelScore],
-    horizon: int,
-) -> ForecastResult:
-    targets = [f"Close_t+{day}" for day in range(1, horizon + 1)]
-    train_df = df.dropna(subset=FEATURE_COLUMNS + targets).copy()
+def prepare_last_row(df: pd.DataFrame):
+    row = df.dropna(subset=FEATURE_COLUMNS).iloc[[-1]].copy()
+    if row.empty:
+        raise ValueError("No hay filas con features validas para predecir.")
+    return row
 
-    latest_features_df = df.dropna(subset=FEATURE_COLUMNS).copy()
-    latest_row = latest_features_df.iloc[[-1]]
 
-    X_train = train_df[FEATURE_COLUMNS]
-    Y_train = train_df[targets]
-
-    model = build_models()[best_model_name]
-    pipeline = make_pipeline(model)
-    pipeline.fit(X_train, Y_train)
-
-    pred = pipeline.predict(latest_row[FEATURE_COLUMNS])[0]
-
-    latest_date = pd.Timestamp(latest_row.iloc[0]["Date"])
-    latest_close = float(latest_row.iloc[0]["Close"])
+def forecast_with_mlp(df: pd.DataFrame, horizon: int) -> ForecastResult:
+    last_row = prepare_last_row(df)
+    last_date = pd.Timestamp(last_row.iloc[0]["Date"])
+    last_close = float(last_row.iloc[0]["Close"])
 
     forecast_rows = []
-    for day, close_pred in enumerate(pred, start=1):
+    for day in range(1, horizon + 1):
+        model, scaler, imputer = load_model_for_horizon(day)
+
+        x_row = last_row[FEATURE_COLUMNS].to_numpy(dtype=float)
+        x_imp = imputer.transform(x_row.reshape(1, -1))
+        x_scaled = scaler.transform(x_imp)
+
+        prediction = model.predict(x_scaled, verbose=0)
+        value = float(prediction[0][0])
+
         forecast_rows.append(
             {
                 "horizon": f"t+{day}",
-                "forecast_date": latest_date + pd.Timedelta(days=day),
-                "predicted_close": float(close_pred),
+                "forecast_date": last_date + pd.Timedelta(days=day),
+                "predicted_close": value,
             }
         )
 
     return ForecastResult(
-        latest_date=latest_date,
-        latest_close=latest_close,
-        model_name=best_model_name,
-        scores=scores,
+        latest_date=last_date,
+        latest_close=last_close,
+        model_name="MLP_Exp3",
         predictions=pd.DataFrame(forecast_rows),
     )
 
 
 def print_result(result: ForecastResult) -> None:
-    print("\n=== Prediccion BTC (basada en experimentos) ===")
+    print("\n=== Prediccion BTC con la red neuronal del Experimento 3 ===")
     print(f"Ultima fecha disponible: {result.latest_date.date()}")
     print(f"Ultimo cierre observado: USD {result.latest_close:,.2f}")
-
-    print("\nModelos evaluados (CV temporal):")
-    for score in result.scores:
-        print(
-            f"- {score.name}: MAE={score.mae_mean:.4f} | RMSE={score.rmse_mean:.4f}"
-        )
-
-    print(f"\nModelo seleccionado: {result.model_name}")
-    print("\nPronostico:")
+    print(f"Modelo usado: {result.model_name}")
+    print("\nPronostico del cierre:")
     for row in result.predictions.itertuples(index=False):
         print(
             f"{row.horizon} | {row.forecast_date.date()} | "
@@ -234,14 +157,11 @@ def print_result(result: ForecastResult) -> None:
 def main() -> None:
     args = parse_args()
 
-    if args.horizon < 1:
-        raise ValueError("El horizonte debe ser mayor o igual a 1.")
-    if args.splits < 2:
-        raise ValueError("La validacion temporal requiere al menos 2 folds.")
+    if args.horizon < 1 or args.horizon > 7:
+        raise ValueError("El horizonte debe estar entre 1 y 7 dias.")
 
     df = load_dataset(args.data_path, args.horizon)
-    best_model_name, scores = evaluate_models(df, args.horizon, args.splits)
-    result = train_best_and_forecast(df, best_model_name, scores, args.horizon)
+    result = forecast_with_mlp(df, args.horizon)
     print_result(result)
 
 
