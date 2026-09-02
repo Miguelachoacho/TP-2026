@@ -2,6 +2,7 @@ joblib
 matplotlib
 numpy
 pandas
+plotly
 requests
 scikit-learn
 scipy
